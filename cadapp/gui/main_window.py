@@ -5,11 +5,14 @@ Defines the main window, menus, toolbars, dock panels, and layout.
 """
 
 from PySide6.QtWidgets import QMainWindow, QDockWidget, QStatusBar, QWidget, QVBoxLayout, QMenu, QMessageBox, QInputDialog, QTreeWidget, QTreeWidgetItem, QStackedWidget, QLabel
-from PySide6.QtGui import QIcon, QAction
+from PySide6.QtGui import QIcon, QAction, QUndoStack
 from PySide6.QtCore import Qt
 from cadapp.gui.viewport_3d import Viewport3D
 from cadapp.gui.toolbar import CADToolbar
 from cadapp.gui.sketch_canvas import SketchCanvas
+from cadapp.gui.constraint_toolbar import ConstraintToolbar
+from cadapp.gui.constraint_browser import ConstraintBrowser
+from cadapp.constraints.constraint_types import ConstraintType
 
 
 class MainWindow(QMainWindow):
@@ -34,6 +37,9 @@ class MainWindow(QMainWindow):
         self.central_stack.addWidget(self.sketch_canvas)
         self.setCentralWidget(self.central_stack)
 
+        self.undo_stack = QUndoStack(self)
+        self.sketch_canvas.set_undo_stack(self.undo_stack)
+
         # Toolbar
         self.toolbar = CADToolbar(self)
         self.addToolBar(Qt.TopToolBarArea, self.toolbar)
@@ -41,13 +47,22 @@ class MainWindow(QMainWindow):
         self.toolbar.sketch_action.triggered.connect(self.new_sketch)
         self.toolbar.extrude_action.triggered.connect(self.extrude_sketch)
         self.toolbar.edit_action.triggered.connect(self.edit_sketch)
+        self.toolbar.select_tool_button.clicked.connect(self._set_select_tool)
         self.toolbar.line_tool_button.clicked.connect(self._set_line_tool)
         self.toolbar.point_tool_button.clicked.connect(self._set_point_tool)
+        self.toolbar.circle_tool_button.clicked.connect(self._set_circle_tool)
+        self.toolbar.arc_tool_button.clicked.connect(self._set_arc_tool)
         self.toolbar.constraint_tool_button.clicked.connect(self._set_constraint_tool)
         self.toolbar.measure_action.triggered.connect(self._set_measure_tool)
         self.toolbar.constraint_none_button.clicked.connect(self._set_constraint_free)
         self.toolbar.constraint_horizontal_button.clicked.connect(self._set_constraint_horizontal)
         self.toolbar.constraint_vertical_button.clicked.connect(self._set_constraint_vertical)
+
+        self.constraint_toolbar = ConstraintToolbar(self)
+        self.addToolBar(Qt.TopToolBarArea, self.constraint_toolbar)
+        self.constraint_toolbar.constraint_requested.connect(self._on_constraint_requested)
+        self.sketch_canvas.available_constraints_changed.connect(self.constraint_toolbar.set_available)
+
         self.finish_sketch_action = QAction(QIcon(), "Finish Sketch", self)
         self.finish_sketch_action.triggered.connect(self.finish_sketch)
         self.toolbar.addAction(self.finish_sketch_action)
@@ -69,6 +84,8 @@ class MainWindow(QMainWindow):
         self.action_edit_sketch.setEnabled(False)
         self.action_view_reset = QAction(QIcon(), "Reset View", self)
         self.action_view_reset.triggered.connect(self.viewport.reset_view)
+        self.action_undo = self.undo_stack.createUndoAction(self, "Undo")
+        self.action_redo = self.undo_stack.createRedoAction(self, "Redo")
 
         self.action_constraint_free = QAction("Free", self, checkable=True)
         self.action_constraint_free.triggered.connect(self._set_constraint_free)
@@ -100,6 +117,14 @@ class MainWindow(QMainWindow):
         self.property_panel.setWidget(self.property_widget)
         self.addDockWidget(Qt.RightDockWidgetArea, self.property_panel)
 
+        self.constraint_browser = ConstraintBrowser(self)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.constraint_browser)
+        self.constraint_browser.suppress_requested.connect(self.sketch_canvas.toggle_suppress_constraint)
+        self.constraint_browser.delete_requested.connect(self.sketch_canvas.delete_constraint)
+        self.constraint_browser.rename_requested.connect(self.sketch_canvas.rename_constraint)
+        self.constraint_browser.edit_requested.connect(self.sketch_canvas.edit_constraint)
+        self.sketch_canvas.constraints_changed.connect(self._refresh_constraint_browser)
+
         # Bottom dock: Console/status (placeholder)
         self.console = QDockWidget("Console", self)
         self.console.setWidget(QWidget())
@@ -107,12 +132,16 @@ class MainWindow(QMainWindow):
 
         # Status bar
         self.setStatusBar(QStatusBar(self))
+        self.dof_status_label = QLabel("DOF: 0 | under-constrained")
+        self.statusBar().addPermanentWidget(self.dof_status_label)
+        self.sketch_canvas.dof_status_changed.connect(self._update_dof_status)
 
         self.current_sketch = None
         self.current_sketch_item = None
         self._setup_feature_tree()
         self._set_line_tool()
         self._set_constraint_free()
+        self._update_dof_status(self.sketch_canvas.document.last_dof_status)
         self._create_menus()
 
     def _setup_feature_tree(self) -> None:
@@ -149,6 +178,9 @@ class MainWindow(QMainWindow):
 
         view_menu = menu_bar.addMenu("View")
         view_menu.addAction(self.action_view_reset)
+        view_menu.addSeparator()
+        view_menu.addAction(self.action_undo)
+        view_menu.addAction(self.action_redo)
 
         self.action_constraint_free.setChecked(True)
 
@@ -215,30 +247,73 @@ class MainWindow(QMainWindow):
 
     def _set_line_tool(self) -> None:
         self.sketch_canvas.set_tool("line")
+        self.toolbar.select_tool_button.setChecked(False)
         self.toolbar.line_tool_button.setChecked(True)
         self.toolbar.point_tool_button.setChecked(False)
+        self.toolbar.circle_tool_button.setChecked(False)
+        self.toolbar.arc_tool_button.setChecked(False)
+        self.toolbar.constraint_tool_button.setChecked(False)
 
     def _set_point_tool(self) -> None:
         self.sketch_canvas.set_tool("point")
+        self.toolbar.select_tool_button.setChecked(False)
         self.toolbar.point_tool_button.setChecked(True)
         self.toolbar.line_tool_button.setChecked(False)
+        self.toolbar.circle_tool_button.setChecked(False)
+        self.toolbar.arc_tool_button.setChecked(False)
+        self.toolbar.constraint_tool_button.setChecked(False)
+
+    def _set_circle_tool(self) -> None:
+        self.sketch_canvas.set_tool("circle")
+        self.toolbar.select_tool_button.setChecked(False)
+        self.toolbar.circle_tool_button.setChecked(True)
+        self.toolbar.line_tool_button.setChecked(False)
+        self.toolbar.point_tool_button.setChecked(False)
+        self.toolbar.arc_tool_button.setChecked(False)
+        self.toolbar.constraint_tool_button.setChecked(False)
+
+    def _set_arc_tool(self) -> None:
+        self.sketch_canvas.set_tool("arc")
+        self.toolbar.select_tool_button.setChecked(False)
+        self.toolbar.arc_tool_button.setChecked(True)
+        self.toolbar.line_tool_button.setChecked(False)
+        self.toolbar.point_tool_button.setChecked(False)
+        self.toolbar.circle_tool_button.setChecked(False)
+        self.toolbar.constraint_tool_button.setChecked(False)
 
     def _set_measure_tool(self) -> None:
         self.sketch_canvas.set_tool("measure")
+        self.toolbar.select_tool_button.setChecked(False)
         self.toolbar.point_tool_button.setChecked(False)
         self.toolbar.line_tool_button.setChecked(False)
+        self.toolbar.circle_tool_button.setChecked(False)
+        self.toolbar.arc_tool_button.setChecked(False)
         self.toolbar.constraint_tool_button.setChecked(False)
-        self.statusBar().showMessage("Dimension mode active: click a line to set its length or a point to set origin coordinates.")
+        self.statusBar().showMessage("Dimension mode active: drag geometry to move free axes, click point/center for coordinates, line for length, circle/arc edge for radius.")
 
     def _set_constraint_tool(self) -> None:
         self.sketch_canvas.set_tool("constraint")
+        self.toolbar.select_tool_button.setChecked(False)
         self.toolbar.point_tool_button.setChecked(False)
         self.toolbar.line_tool_button.setChecked(False)
+        self.toolbar.circle_tool_button.setChecked(False)
+        self.toolbar.arc_tool_button.setChecked(False)
         self.toolbar.constraint_tool_button.setChecked(True)
-        self.statusBar().showMessage("Constraint mode active: click a point or a line to apply constraints.")
+        self.statusBar().showMessage("Constraint mode active: select entities, then click a tool in the Constraint toolbar.")
+
+    def _set_select_tool(self) -> None:
+        self.sketch_canvas.set_tool("select")
+        self.toolbar.select_tool_button.setChecked(True)
+        self.toolbar.point_tool_button.setChecked(False)
+        self.toolbar.line_tool_button.setChecked(False)
+        self.toolbar.circle_tool_button.setChecked(False)
+        self.toolbar.arc_tool_button.setChecked(False)
+        self.toolbar.constraint_tool_button.setChecked(False)
+        self.statusBar().showMessage("Select mode active: click geometry to select and drag to move without drawing.")
 
     def _set_constraint_free(self) -> None:
         self.sketch_canvas.set_constraint_mode("free")
+        self.sketch_canvas.set_active_constraint_type(None)
         self.toolbar.constraint_none_button.setChecked(True)
         self.action_constraint_free.setChecked(True)
         self.action_constraint_horizontal.setChecked(False)
@@ -246,6 +321,7 @@ class MainWindow(QMainWindow):
 
     def _set_constraint_horizontal(self) -> None:
         self.sketch_canvas.set_constraint_mode("horizontal")
+        self.sketch_canvas.set_active_constraint_type(ConstraintType.HORIZONTAL)
         self.toolbar.constraint_horizontal_button.setChecked(True)
         self.action_constraint_free.setChecked(False)
         self.action_constraint_horizontal.setChecked(True)
@@ -253,6 +329,7 @@ class MainWindow(QMainWindow):
 
     def _set_constraint_vertical(self) -> None:
         self.sketch_canvas.set_constraint_mode("vertical")
+        self.sketch_canvas.set_active_constraint_type(ConstraintType.VERTICAL)
         self.toolbar.constraint_vertical_button.setChecked(True)
         self.action_constraint_free.setChecked(False)
         self.action_constraint_horizontal.setChecked(False)
@@ -263,7 +340,28 @@ class MainWindow(QMainWindow):
         self.sketch_canvas.clear()
         self.sketch_canvas.show()
         self.central_stack.setCurrentWidget(self.sketch_canvas)
+        self._refresh_constraint_browser()
         self.statusBar().showMessage("Sketch mode active: click to place points, shift or Constraint for horizontal/vertical lines.")
+
+    def _on_constraint_requested(self, constraint_type: ConstraintType) -> None:
+        self.sketch_canvas.apply_constraint(constraint_type)
+        self._refresh_constraint_browser()
+
+    def _refresh_constraint_browser(self) -> None:
+        self.constraint_browser.refresh(
+            self.sketch_canvas.document.constraint_manager.all(),
+            self.sketch_canvas.document.last_dof_status,
+        )
+
+    def _update_dof_status(self, status: dict) -> None:
+        state = status.get("status", "under-constrained")
+        remaining = int(status.get("remaining_dof", 0))
+        conflicts = status.get("conflicts", [])
+        conflict_suffix = ""
+        if conflicts:
+            conflict_suffix = f" | conflicts: {len(conflicts)}"
+        self.dof_status_label.setText(f"DOF: {remaining} | {state}{conflict_suffix}")
+        self._refresh_constraint_browser()
 
     def finish_sketch(self) -> None:
         if not self.sketch_canvas.closed:

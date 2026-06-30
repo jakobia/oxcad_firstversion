@@ -4,6 +4,8 @@ toolbar.py - CAD toolbar for main window
 Defines the main toolbar with basic CAD tools.
 """
 
+from pathlib import Path
+
 from PySide6.QtWidgets import QToolBar, QToolButton, QButtonGroup
 from PySide6.QtGui import QIcon, QAction
 from PySide6.QtCore import Qt, QSize
@@ -24,6 +26,8 @@ class CADToolbar(QToolBar):
         """
         Initialize toolbar actions.
         """
+        icons_dir = Path(__file__).resolve().parent.parent / "data" / "icons"
+
         # Placeholder icons and actions
         self.new_action = QAction(QIcon(), "New", self)
         self.open_action = QAction(QIcon(), "Open", self)
@@ -36,23 +40,44 @@ class CADToolbar(QToolBar):
         self.export_step_action = QAction(QIcon(), "Export STEP", self)
         self.export_stl_action = QAction(QIcon(), "Export STL", self)
 
+        self.select_tool_button = QToolButton(self)
+        self.select_tool_button.setText("Select")
+        self.select_tool_button.setIcon(QIcon(str(icons_dir / "tool_select.svg")))
+        self.select_tool_button.setCheckable(True)
+
         self.line_tool_button = QToolButton(self)
         self.line_tool_button.setText("Line")
+        self.line_tool_button.setIcon(QIcon(str(icons_dir / "tool_line.svg")))
         self.line_tool_button.setCheckable(True)
         self.line_tool_button.setChecked(True)
 
         self.point_tool_button = QToolButton(self)
         self.point_tool_button.setText("Point")
+        self.point_tool_button.setIcon(QIcon(str(icons_dir / "tool_point.svg")))
         self.point_tool_button.setCheckable(True)
+
+        self.circle_tool_button = QToolButton(self)
+        self.circle_tool_button.setText("Circle")
+        self.circle_tool_button.setIcon(QIcon(str(icons_dir / "tool_circle.svg")))
+        self.circle_tool_button.setCheckable(True)
+
+        self.arc_tool_button = QToolButton(self)
+        self.arc_tool_button.setText("Arc")
+        self.arc_tool_button.setIcon(QIcon(str(icons_dir / "tool_arc.svg")))
+        self.arc_tool_button.setCheckable(True)
 
         self.constraint_tool_button = QToolButton(self)
         self.constraint_tool_button.setText("Constraint")
+        self.constraint_tool_button.setIcon(QIcon(str(icons_dir / "tool_constraint.svg")))
         self.constraint_tool_button.setCheckable(True)
 
         self.tool_button_group = QButtonGroup(self)
         self.tool_button_group.setExclusive(True)
+        self.tool_button_group.addButton(self.select_tool_button)
         self.tool_button_group.addButton(self.line_tool_button)
         self.tool_button_group.addButton(self.point_tool_button)
+        self.tool_button_group.addButton(self.circle_tool_button)
+        self.tool_button_group.addButton(self.arc_tool_button)
         self.tool_button_group.addButton(self.constraint_tool_button)
 
         self.constraint_none_button = QToolButton(self)
@@ -79,8 +104,11 @@ class CADToolbar(QToolBar):
         self.addAction(self.save_action)
         self.addSeparator()
         self.addAction(self.sketch_action)
+        self.addWidget(self.select_tool_button)
         self.addWidget(self.line_tool_button)
         self.addWidget(self.point_tool_button)
+        self.addWidget(self.circle_tool_button)
+        self.addWidget(self.arc_tool_button)
         self.addWidget(self.constraint_tool_button)
         self.addSeparator()
         self.addWidget(self.constraint_none_button)
